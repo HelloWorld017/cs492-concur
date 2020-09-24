@@ -11,7 +11,7 @@ pub struct Cache<K, V> {
     inner: RwLock<HashMap<K, Arc<RwLock<Option<V>>>>>
 }
 
-impl<K: Eq + Hash + Clone + std::fmt::Debug, V: Clone> Cache<K, V> {
+impl<K: Eq + Hash + Clone, V: Clone> Cache<K, V> {
     /// Retrieve the value or insert a new one created by `f`.
     ///
     /// An invocation to this function should not block another invocation with a different key.
@@ -42,7 +42,7 @@ impl<K: Eq + Hash + Clone + std::fmt::Debug, V: Clone> Cache<K, V> {
                         let calc_result = f(key);
                         *write_lock_guard = Some(calc_result.clone());
 
-                        calc_result.clone()
+                        calc_result
                     }
 
                     Some(lock) => {
