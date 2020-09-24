@@ -2,16 +2,16 @@
 
 use std::collections::hash_map::{Entry, HashMap};
 use std::hash::Hash;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock, Mutex};
 
 /// Cache that remembers the result for each key.
 #[derive(Debug, Default)]
 pub struct Cache<K, V> {
     // todo! Build your own cache type.
-    inner: ()
+    inner: RwLock<HashMap<K, Arc<RwLock<Option<V>>>>>
 }
 
-impl<K: Eq + Hash + Clone, V: Clone> Cache<K, V> {
+impl<K: Eq + Hash + Clone + std::fmt::Debug, V: Clone> Cache<K, V> {
     /// Retrieve the value or insert a new one created by `f`.
     ///
     /// An invocation to this function should not block another invocation with a different key.
@@ -23,7 +23,46 @@ impl<K: Eq + Hash + Clone, V: Clone> Cache<K, V> {
     /// duplicate the work. That is, `f` should be run only once for each key. Specifically, even
     /// for the concurrent invocations of `get_or_insert_with(key, f)`, `f` is called only once.
     pub fn get_or_insert_with<F: FnOnce(K) -> V>(&self, key: K, f: F) -> V {
-        todo!()
+        let map = self.inner.read().unwrap();
+
+        match map.get(&key) {
+            None => {
+                drop(map);
+                let mut map = self.inner.write().unwrap();
+
+                match map.get(&key) {
+                    None => {
+                        let lock = Arc::new(RwLock::new(None));
+                        let write_lock = lock.clone();
+                        let mut write_lock_guard = write_lock.write().unwrap();
+
+                        map.insert(key.clone(), lock);
+                        drop(map);
+
+                        let calc_result = f(key);
+                        *write_lock_guard = Some(calc_result.clone());
+
+                        calc_result.clone()
+                    }
+
+                    Some(lock) => {
+                        let read_lock = lock.clone();
+                        drop(map);
+
+                        let read_lock_guard = read_lock.read().unwrap();
+                        read_lock_guard.clone().unwrap()
+                    }
+                }
+            }
+
+            Some(lock) => {
+                let read_lock = lock.clone();
+                drop(map);
+
+                let read_lock_guard = read_lock.read().unwrap();
+                read_lock_guard.clone().unwrap()
+            }
+        }
     }
 }
 
