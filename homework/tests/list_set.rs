@@ -10,6 +10,18 @@ use std::sync::atomic::{
 use cs492_concur_homework::OrderedListSet;
 
 #[test]
+fn basic_insert1() {
+    let set = OrderedListSet::<i32>::new();
+    set.insert(1).unwrap();
+
+    let mut hashset = HashSet::<i32>::new();
+    hashset.insert(1);
+
+    let result = set.iter().map(Clone::clone).collect::<HashSet<_>>();
+    assert_eq!(result, hashset);
+}
+
+#[test]
 fn smoke() {
     let set = OrderedListSet::new();
     set.insert(1).unwrap();

@@ -37,7 +37,31 @@ impl<'l, T: Ord> Cursor<'l, T> {
     /// Move the cursor to the position of key in the sorted list. If the key is found in the list,
     /// return `true`.
     fn find(&mut self, key: &T) -> bool {
-        todo!()
+        let mut mutex_guard = & self.0;
+        if (*mutex_guard).is_null() {
+            return false
+        }
+
+        let mut node = unsafe { & *(*(*mutex_guard)) };
+
+        if key < &node.data {
+            return false
+        }
+
+        loop {
+            let next_guard = node.next.lock().unwrap();
+            if (*next_guard).is_null() {
+                return false
+            }
+
+            let next_node = unsafe { & *(*next_guard) };
+            if key < &next_node.data {
+                return key == &node.data
+            }
+
+            self.0 = next_guard;
+            node = next_node;
+        }
     }
 }
 
@@ -50,24 +74,63 @@ impl<T> OrderedListSet<T> {
     }
 }
 
-impl<T: Ord> OrderedListSet<T> {
+impl<T: Ord + std::fmt::Display> OrderedListSet<T> {
     fn find(&self, key: &T) -> (bool, Cursor<T>) {
-        todo!()
+        let mut cursor = Cursor(self.head.lock().unwrap());
+        let result = cursor.find(key);
+
+        (result, cursor)
     }
 
     /// Returns `true` if the set contains the key.
     pub fn contains(&self, key: &T) -> bool {
-        todo!()
+        let (result, cursor) = self.find(&key);
+        result
     }
 
     /// Insert a key to the set. If the set already has the key, return the provided key in `Err`.
     pub fn insert(&self, key: T) -> Result<(), T> {
-        todo!()
+        let (result, cursor) = self.find(&key);
+        if result {
+            return Err(key)
+        }
+
+        let mut current_guard = cursor.0;
+        if (*current_guard).is_null() {
+            let node = Node::new(key, ptr::null_mut());
+            *current_guard = node;
+
+            return Ok(())
+        }
+
+        let current_node = unsafe { & *(*current_guard) };
+        let mut next_guard = current_node.next.lock().unwrap();
+
+        drop(current_guard);
+
+        let node = Node::new(key, *next_guard);
+        *next_guard = node;
+
+        Ok(())
     }
 
     /// Remove the key from the set and return it.
     pub fn remove(&self, key: &T) -> Result<T, ()> {
-        todo!()
+        let (result, cursor) = self.find(&key);
+        if !result {
+            return Err(())
+        }
+
+        let mut current_guard = cursor.0;
+        let current_node = unsafe { & *(*current_guard) };
+
+        let mut removed_guard = current_node.next.lock().unwrap();
+        let removed_node = unsafe { Box::from_raw(*removed_guard) };
+
+        *removed_guard = *removed_node.next.lock().unwrap();
+        drop(current_guard);
+
+        Ok(removed_node.data)
     }
 }
 
@@ -85,13 +148,51 @@ impl<'l, T> Iterator for Iter<'l, T> {
     type Item = &'l T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        let mutex_guard = match &self.0 {
+            None => return None,
+            Some(mutex_guard) => {
+                mutex_guard
+            }
+        };
+
+        let node = unsafe { & *(*(*mutex_guard)) };
+
+        let next_guard = node.next.lock().unwrap();
+        drop(mutex_guard);
+
+        if (*next_guard).is_null() {
+            self.0 = None;
+            Some(& node.data)
+        } else {
+            self.0 = Some(next_guard);
+            Some(& node.data)
+        }
     }
 }
 
 impl<T> Drop for OrderedListSet<T> {
     fn drop(&mut self) {
-        todo!()
+        let mut mutex_guard = self.head.lock().unwrap();
+        if !(*mutex_guard).is_null() {
+            let mut node = unsafe { & *(*mutex_guard) };
+            *mutex_guard = ptr::null_mut();
+
+            loop {
+                mutex_guard = node.next.lock().unwrap();
+                if (*mutex_guard).is_null() {
+                    break
+                }
+
+                drop(node);
+
+                let next_node = unsafe { & *(*mutex_guard) };
+                node = next_node;
+            }
+
+            drop(node);
+        }
+
+        drop(&self.head);
     }
 }
 
