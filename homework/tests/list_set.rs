@@ -13,9 +13,13 @@ use cs492_concur_homework::OrderedListSet;
 fn basic_insert1() {
     let set = OrderedListSet::<i32>::new();
     set.insert(1).unwrap();
+    set.insert(0).unwrap();
+    set.remove(&0).unwrap();
 
     let mut hashset = HashSet::<i32>::new();
     hashset.insert(1);
+    hashset.insert(0);
+    hashset.remove(&0);
 
     let result = set.iter().map(Clone::clone).collect::<HashSet<_>>();
     assert_eq!(result, hashset);

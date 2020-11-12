@@ -44,22 +44,23 @@ impl<'l, T: Ord> Cursor<'l, T> {
 
         let mut node = unsafe { & *(*(*mutex_guard)) };
 
-        if key < &node.data {
-            return false
+        if key <= &node.data {
+            return key == &node.data
         }
 
         loop {
             let next_guard = node.next.lock().unwrap();
-            if (*next_guard).is_null() {
+            self.0 = next_guard;
+
+            if (*self.0).is_null() {
                 return false
             }
 
-            let next_node = unsafe { & *(*next_guard) };
-            if key < &next_node.data {
-                return key == &node.data
+            let next_node = unsafe { & *(*self.0) };
+            if key <= &next_node.data {
+                return key == &next_node.data
             }
 
-            self.0 = next_guard;
             node = next_node;
         }
     }
@@ -74,7 +75,7 @@ impl<T> OrderedListSet<T> {
     }
 }
 
-impl<T: Ord + std::fmt::Display> OrderedListSet<T> {
+impl<T: Ord> OrderedListSet<T> {
     fn find(&self, key: &T) -> (bool, Cursor<T>) {
         let mut cursor = Cursor(self.head.lock().unwrap());
         let result = cursor.find(key);
@@ -96,21 +97,8 @@ impl<T: Ord + std::fmt::Display> OrderedListSet<T> {
         }
 
         let mut current_guard = cursor.0;
-        if (*current_guard).is_null() {
-            let node = Node::new(key, ptr::null_mut());
-            *current_guard = node;
 
-            return Ok(())
-        }
-
-        let current_node = unsafe { & *(*current_guard) };
-        let mut next_guard = current_node.next.lock().unwrap();
-
-        drop(current_guard);
-
-        let node = Node::new(key, *next_guard);
-        *next_guard = node;
-
+        *current_guard = Node::new(key, *current_guard);
         Ok(())
     }
 
@@ -121,14 +109,10 @@ impl<T: Ord + std::fmt::Display> OrderedListSet<T> {
             return Err(())
         }
 
-        let mut current_guard = cursor.0;
-        let current_node = unsafe { & *(*current_guard) };
+        let mut removed_guard = cursor.0; // 이전값의 next
+        let removed_node = unsafe { Box::from_raw(*removed_guard) }; // 지워질 값
 
-        let mut removed_guard = current_node.next.lock().unwrap();
-        let removed_node = unsafe { Box::from_raw(*removed_guard) };
-
-        *removed_guard = *removed_node.next.lock().unwrap();
-        drop(current_guard);
+        *removed_guard = *(*removed_node).next.lock().unwrap(); //다음값을 이전값의 next
 
         Ok(removed_node.data)
     }
@@ -154,6 +138,10 @@ impl<'l, T> Iterator for Iter<'l, T> {
                 mutex_guard
             }
         };
+
+        if (*mutex_guard).is_null() {
+            return None
+        }
 
         let node = unsafe { & *(*(*mutex_guard)) };
 
