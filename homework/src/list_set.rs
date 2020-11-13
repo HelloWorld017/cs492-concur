@@ -121,12 +121,12 @@ impl<T: Ord> OrderedListSet<T> {
 }
 
 #[derive(Debug)]
-pub struct Iter<'l, T>(Option<MutexGuard<'l, *mut Node<T>>>);
+pub struct Iter<'l, T>(Option<MutexGuard<'l, *mut Node<T>>>, bool);
 
 impl<T> OrderedListSet<T> {
     /// An iterator visiting all elements.
     pub fn iter(&self) -> Iter<T> {
-        Iter(Some(self.head.lock().unwrap()))
+        Iter(Some(self.head.lock().unwrap()), true)
     }
 }
 
@@ -147,14 +147,23 @@ impl<'l, T> Iterator for Iter<'l, T> {
 
         let node = unsafe { & *(*(*mutex_guard)) };
 
+        // I know this solution is kinda *hacky*,
+        // but there was no other option.
+        if self.1 {
+            self.1 = false;
+            return Some(& node.data);
+        }
+
         let next_guard = node.next.lock().unwrap();
 
         if (*next_guard).is_null() {
             self.0 = None;
-            Some(& node.data)
+            None
         } else {
+            let next_node = unsafe { & *(*next_guard) };
             self.0 = Some(next_guard);
-            Some(& node.data)
+
+            Some(& next_node.data)
         }
     }
 }
