@@ -1,4 +1,4 @@
-use cs492_concur_homework::{Art, SequentialMap};
+use cs492_concur_homework::{Art, SequentialMap, StrStringMap};
 
 pub mod map;
 
@@ -49,5 +49,6 @@ fn art_regression_delete_after_enlarge() {
 
 #[test]
 fn art_stress() {
-    map::stress_sequential::<str, Art<usize>>();
+    const STEPS: usize = 4096;
+    map::stress_sequential::<String, StrStringMap<_, Art<usize>>>(STEPS);
 }
