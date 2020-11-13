@@ -109,10 +109,12 @@ impl<T: Ord> OrderedListSet<T> {
             return Err(())
         }
 
-        let mut removed_guard = cursor.0; // 이전값의 next
-        let removed_node = unsafe { Box::from_raw(*removed_guard) }; // 지워질 값
+        let mut removed_guard = cursor.0;
+        let removed_node = unsafe { Box::from_raw(*removed_guard) };
 
-        *removed_guard = *(*removed_node).next.lock().unwrap(); //다음값을 이전값의 next
+        let next_guard = (*removed_node).next.lock().unwrap();
+        let next_node = *next_guard;
+        *removed_guard = next_node;
 
         Ok(removed_node.data)
     }
@@ -146,7 +148,6 @@ impl<'l, T> Iterator for Iter<'l, T> {
         let node = unsafe { & *(*(*mutex_guard)) };
 
         let next_guard = node.next.lock().unwrap();
-        drop(mutex_guard);
 
         if (*next_guard).is_null() {
             self.0 = None;
@@ -160,27 +161,16 @@ impl<'l, T> Iterator for Iter<'l, T> {
 
 impl<T> Drop for OrderedListSet<T> {
     fn drop(&mut self) {
-        let mut mutex_guard = self.head.lock().unwrap();
-        if !(*mutex_guard).is_null() {
-            let mut node = unsafe { & *(*mutex_guard) };
-            *mutex_guard = ptr::null_mut();
-
-            loop {
-                mutex_guard = node.next.lock().unwrap();
-                if (*mutex_guard).is_null() {
-                    break
-                }
-
-                drop(node);
-
-                let next_node = unsafe { & *(*mutex_guard) };
-                node = next_node;
+        let mut next_ptr = self.head.get_mut().unwrap();
+        let mut node;
+        loop {
+            if (*next_ptr).is_null() {
+                break
             }
 
-            drop(node);
+            node = unsafe { Box::from_raw(*next_ptr) };
+            next_ptr = (*node).next.get_mut().unwrap();
         }
-
-        drop(&self.head);
     }
 }
 
