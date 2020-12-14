@@ -173,7 +173,39 @@ impl Debug for Segment {
 impl<T> Drop for GrowableArray<T> {
     /// Deallocate segments, but not the individual elements.
     fn drop(&mut self) {
-        todo!()
+        let max_key = (1usize << SEGMENT_LOGSIZE) - 1;
+        let mut stack = vec![];
+        let guard = unsafe { unprotected() };
+        let root =
+            unsafe { self.root.load(Ordering::Relaxed, guard).into_owned() };
+
+        let root_height  = root.tag();
+        stack.push((root, root_height));
+
+        while !stack.is_empty() {
+            let (mut node, height) = stack.pop().unwrap();
+
+            if height == 1 {
+                drop(node);
+                continue;
+            }
+
+            for x in 0..max_key {
+                let ptr = unsafe {
+                    let ptr = unsafe {
+                        mem::take(&mut node.inner[x])
+                    };
+
+                    Shared::from_usize(ptr.into_inner())
+                };
+
+                if !ptr.is_null() {
+                    stack.push((unsafe { ptr.into_owned() }, height - 1));
+                }
+            }
+
+            drop(node);
+        }
     }
 }
 
@@ -195,6 +227,69 @@ impl<T> GrowableArray<T> {
     /// Returns the reference to the `Atomic` pointer at `index`. Allocates new segments if
     /// necessary.
     pub fn get(&self, mut index: usize, guard: &Guard) -> &Atomic<T> {
-        todo!()
+        // Ensure tree height
+        let (root, root_height) = loop {
+            let root = self.root.load(Ordering::Acquire, guard);
+            let root_height = root.tag();
+            if index >= (1usize << SEGMENT_LOGSIZE * root_height) {
+                let mut new_node = Segment::new();
+                new_node.inner[0] = AtomicUsize::new(root.into_usize());
+
+                let owned_ptr = Owned::new(new_node);
+
+                match self.root.compare_and_set(
+                    root,
+                    owned_ptr.with_tag(root_height + 1),
+                    Ordering::Release,
+                    guard
+                ) {
+                    // We don't need to handle error
+                    _ => ()
+                };
+
+                continue;
+            }
+
+            break (root, root_height);
+        };
+
+        // Find node
+        let mut current_height = root_height;
+        let mut node: Atomic<Segment> = Atomic::from(root);
+        let mask = (1 << SEGMENT_LOGSIZE) - 1;
+
+        loop {
+            let current_index = (index >> ((current_height - 1) * SEGMENT_LOGSIZE)) & mask;
+            let next_node = unsafe {
+                node.load(Ordering::Acquire, guard).deref().get_unchecked(current_index)
+            };
+
+            let next_usize = next_node.load(Ordering::Relaxed);
+            let next_ptr = unsafe { Shared::from_usize(next_usize) };
+
+            if current_height == 1 {
+                return unsafe { &*(next_node as *const _ as *const Atomic<T>) };
+            }
+
+            if next_ptr.is_null() {
+                let mut new_node = Segment::new();
+                let owned_ptr = Owned::new(new_node);
+                let new_usize = owned_ptr.into_usize();
+
+                if next_node.compare_and_swap(
+                    next_usize,
+                    new_usize,
+                    Ordering::Release
+                ) == next_usize {
+                    current_height -= 1;
+                    node = unsafe { Atomic::from(Shared::from_usize(new_usize)) };
+                }
+
+                continue;
+            }
+
+            current_height -= 1;
+            node = Atomic::from(next_ptr);
+        }
     }
 }
