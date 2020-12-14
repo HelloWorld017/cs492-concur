@@ -243,7 +243,9 @@ impl<T> GrowableArray<T> {
                     Ordering::Release,
                     guard
                 ) {
-                    // We don't need to handle error
+                    Err(err) => {
+                        drop(err.new);
+                    }
                     _ => ()
                 };
 
@@ -264,7 +266,7 @@ impl<T> GrowableArray<T> {
                 node.load(Ordering::Acquire, guard).deref().get_unchecked(current_index)
             };
 
-            let next_usize = next_node.load(Ordering::Relaxed);
+            let next_usize = next_node.load(Ordering::Acquire);
             let next_ptr = unsafe { Shared::from_usize(next_usize) };
 
             if current_height == 1 {
@@ -283,6 +285,9 @@ impl<T> GrowableArray<T> {
                 ) == next_usize {
                     current_height -= 1;
                     node = unsafe { Atomic::from(Shared::from_usize(new_usize)) };
+                } else {
+                    let owned: Owned<Segment> = unsafe { Owned::from_usize(new_usize) };
+                    drop(owned);
                 }
 
                 continue;
