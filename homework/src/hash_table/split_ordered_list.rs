@@ -184,7 +184,7 @@ impl<V> NonblockingMap<usize, V> for SplitOrderedList<V> where V: std::fmt::Debu
 
         let count = self.count.fetch_add(1, Ordering::Acquire);
         if count > size * SplitOrderedList::<V>::LOAD_FACTOR {
-            self.size.compare_and_swap(size, size * 2, Ordering::Release);
+            self.size.compare_and_swap(size, size * 2, Ordering::Relaxed);
         }
 
         Ok(())
@@ -199,7 +199,7 @@ impl<V> NonblockingMap<usize, V> for SplitOrderedList<V> where V: std::fmt::Debu
 
         match cursor.delete(guard) {
             Ok(v) => {
-                self.count.fetch_sub(1, Ordering::Release);
+                self.count.fetch_sub(1, Ordering::Relaxed);
                 Ok(v.as_ref().unwrap())
             },
             Err(_) => Err(())
