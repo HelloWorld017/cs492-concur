@@ -6,6 +6,7 @@ use core::mem;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crossbeam_epoch::{unprotected, Atomic, Guard, Owned, Pointer, Shared};
+use rand::seq::index::IndexVec::USize;
 
 /// Growable array of `Atomic<T>`.
 ///
@@ -192,10 +193,7 @@ impl<T> Drop for GrowableArray<T> {
 
             for x in 0..max_key {
                 let ptr = unsafe {
-                    let ptr = unsafe {
-                        mem::take(&mut node.inner[x])
-                    };
-
+                    let ptr = mem::take(&mut node.inner[x]);
                     Shared::from_usize(ptr.into_inner())
                 };
 
@@ -215,6 +213,9 @@ impl<T> Default for GrowableArray<T> {
     }
 }
 
+// usize::BITS is nightly-only API
+const USIZE_SIZE: usize = mem::size_of::<usize>() * 8;
+
 impl<T> GrowableArray<T> {
     /// Create a new growable array.
     pub fn new() -> Self {
@@ -231,28 +232,38 @@ impl<T> GrowableArray<T> {
         let (root, root_height) = loop {
             let root = self.root.load(Ordering::Acquire, guard);
             let root_height = root.tag();
-            if index >= (1usize << SEGMENT_LOGSIZE * root_height) {
-                let mut new_node = Segment::new();
-                new_node.inner[0] = AtomicUsize::new(root.into_usize());
+            let max_key =
+                if root_height > 0
+                {
+                    let sr_count = std::cmp::min(
+                        USIZE_SIZE, SEGMENT_LOGSIZE * root_height
+                    );
+                    usize::MAX >> USIZE_SIZE - sr_count
+                } else
+                { 0 };
 
-                let owned_ptr = Owned::new(new_node);
-
-                match self.root.compare_and_set(
-                    root,
-                    owned_ptr.with_tag(root_height + 1),
-                    Ordering::Release,
-                    guard
-                ) {
-                    Err(err) => {
-                        drop(err.new);
-                    }
-                    _ => ()
-                };
-
-                continue;
+            if index < max_key {
+                break (root, root_height);
             }
 
-            break (root, root_height);
+            let mut new_node = Segment::new();
+            new_node.inner[0] = AtomicUsize::new(root.into_usize());
+
+            let owned_ptr = Owned::new(new_node);
+
+            match self.root.compare_and_set(
+                root,
+                owned_ptr.with_tag(root_height + 1),
+                Ordering::Release,
+                guard
+            ) {
+                Err(err) => {
+                    drop(err.new);
+                }
+                _ => ()
+            };
+
+            continue;
         };
 
         // Find node
