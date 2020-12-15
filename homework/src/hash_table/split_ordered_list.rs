@@ -82,14 +82,22 @@ impl<V> SplitOrderedList<V> where V: std::fmt::Debug {
         );
 
         let inserted_cursor = loop {
-            let found = parent_cursor.find_harris_michael(&reversed_key, guard).unwrap();
+            let (found, mut my_cursor) = loop {
+                let mut my_cursor = parent_cursor.clone();
+
+                match my_cursor.find_harris_michael(&reversed_key, guard) {
+                    Ok(found) => break (found, my_cursor),
+                    Err(_) => ()
+                }
+            };
+
             if found {
                 drop(sentinel_node);
-                break parent_cursor;
+                break my_cursor;
             }
 
-            match parent_cursor.insert(sentinel_node, guard) {
-                Ok(_) => break parent_cursor,
+            match my_cursor.insert(sentinel_node, guard) {
+                Ok(_) => break my_cursor,
                 Err(e) => { sentinel_node = e; }
             };
         };
@@ -108,7 +116,7 @@ impl<V> SplitOrderedList<V> where V: std::fmt::Debug {
     }
 
     fn make_content_key(key: &usize) -> usize { (
-        *key
+        key | SplitOrderedList::<V>::HI_MASK
 
         /*SplitOrderedList::<V>::MASK
             & key
@@ -124,12 +132,13 @@ impl<V> SplitOrderedList<V> where V: std::fmt::Debug {
     ) -> (usize, bool, Cursor<'s, usize, Option<V>>) {
         let size = self.size.load(Ordering::Acquire);
         let bucket_key = SplitOrderedList::<V>::MASK & (key % size);
-        let mut cursor = self.lookup_bucket(bucket_key, guard);
+        let cursor = self.lookup_bucket(bucket_key, guard);
 
         let content_key = SplitOrderedList::<V>::make_content_key(key);
         loop {
-            match cursor.find_harris_michael(&content_key, guard) {
-                Ok(found) => break (size, found, cursor),
+            let mut my_cursor = cursor.clone();
+            match my_cursor.find_harris_michael(&content_key, guard) {
+                Ok(found) => break (size, found, my_cursor),
                 Err(_) => ()
             }
         }
