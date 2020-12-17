@@ -1,6 +1,5 @@
 //! Split-ordered linked list.
 
-use core::mem;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crossbeam_epoch::{Guard, Owned, Shared};
 use lockfree::list::{Cursor, List, Node};
@@ -85,7 +84,7 @@ impl<V> SplitOrderedList<V> where V: std::fmt::Debug {
             let (found, mut my_cursor) = loop {
                 let mut my_cursor = parent_cursor.clone();
 
-                match my_cursor.find_harris_michael(&reversed_key, guard) {
+                match my_cursor.find_harris(&reversed_key, guard) {
                     Ok(found) => break (found, my_cursor),
                     Err(_) => ()
                 }
@@ -131,13 +130,13 @@ impl<V> SplitOrderedList<V> where V: std::fmt::Debug {
         guard: &'s Guard,
     ) -> (usize, bool, Cursor<'s, usize, Option<V>>) {
         let size = self.size.load(Ordering::Acquire);
-        let bucket_key = SplitOrderedList::<V>::MASK & (key % size);
+        let bucket_key = (key % size);
         let cursor = self.lookup_bucket(bucket_key, guard);
 
         let content_key = SplitOrderedList::<V>::make_content_key(key);
         loop {
             let mut my_cursor = cursor.clone();
-            match my_cursor.find_harris_michael(&content_key, guard) {
+            match my_cursor.find_harris(&content_key, guard) {
                 Ok(found) => break (size, found, my_cursor),
                 Err(_) => ()
             }
@@ -182,7 +181,7 @@ impl<V> NonblockingMap<usize, V> for SplitOrderedList<V> where V: std::fmt::Debu
             }
         };
 
-        let count = self.count.fetch_add(1, Ordering::Acquire);
+        let count = self.count.fetch_add(1, Ordering::Relaxed);
         if count > size * SplitOrderedList::<V>::LOAD_FACTOR {
             self.size.compare_and_swap(size, size * 2, Ordering::Relaxed);
         }
