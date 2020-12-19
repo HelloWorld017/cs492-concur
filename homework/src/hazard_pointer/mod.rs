@@ -103,7 +103,7 @@ thread_local! {
 /// Returns `None` if the current thread's hazard array is fully occupied. The returned shield must
 /// be validated before using.
 pub fn protect<T>(pointer: Shared<T>) -> Option<Shield<'static, T>> {
-    todo!()
+    unsafe { Shield::new(pointer, HAZARDS.get(thread::current().id())) }
 }
 
 /// Returns a validated shield. Returns `None` if the current thread's hazard array is fully

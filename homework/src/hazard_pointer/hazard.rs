@@ -13,6 +13,8 @@ use loom::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering};
 
 use super::align;
 use super::atomic::Shared;
+use crate::hazard_pointer::retire::Retirees;
+use crate::hazard_pointer::RETIRED;
 
 /// Per-thread array of hazard pointers.
 ///
@@ -48,7 +50,27 @@ impl LocalHazards {
     ///
     /// This function must be called only by the thread that owns this hazard array.
     pub unsafe fn alloc(&self, data: usize) -> Option<usize> {
-        todo!()
+        loop {
+            let occupied = self.occupied.load(Ordering::Acquire);
+            for x in 0..8 {
+                if occupied & (1 << x) != 0 {
+                    continue;
+                }
+
+                if self.occupied.compare_and_swap(
+                    occupied,
+                    occupied | (1 << x),
+                    Ordering::Acquire
+                ) != occupied {
+                    continue;
+                };
+
+                self.elements[x].store(data, Ordering::Release);
+                return Some(x);
+            };
+
+            return None;
+        }
     }
 
     /// Clears the hazard pointer at the given index.
@@ -58,7 +80,19 @@ impl LocalHazards {
     /// This function must be called only by the thread that owns this hazard array. The index must
     /// have been allocated.
     pub unsafe fn dealloc(&self, index: usize) {
-        todo!()
+        loop {
+            let occupied = self.occupied.load(Ordering::Acquire);
+
+            if self.occupied.compare_and_swap(
+                occupied,
+                occupied ^ (1 << index),
+                Ordering::Release
+            ) != occupied {
+                continue;
+            };
+
+            break;
+        }
     }
 
     /// Returns an iterator of hazard pointers (with tags erased).
@@ -66,6 +100,7 @@ impl LocalHazards {
         LocalHazardsIter {
             hazards: self,
             occupied: self.occupied.load(Ordering::Acquire),
+            idx: 0
         }
     }
 }
@@ -74,13 +109,30 @@ impl LocalHazards {
 struct LocalHazardsIter<'s> {
     hazards: &'s LocalHazards,
     occupied: u8,
+    idx: usize
 }
 
 impl Iterator for LocalHazardsIter<'_> {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        while self.idx < 8 {
+            let output =
+                if self.occupied & (0x1 << self.idx) == 0 {
+                    None
+                } else {
+                    self.hazards.elements.get(self.idx)
+                        .map(|x| { x.load(Ordering::Acquire) })
+                };
+
+            self.idx += 1;
+
+            if output.is_some() {
+                return output;
+            }
+        }
+
+        None
     }
 }
 
@@ -100,7 +152,16 @@ impl<'s, T> Shield<'s, T> {
     ///
     /// This function must be called only by the thread that owns this hazard array.
     pub unsafe fn new(pointer: Shared<T>, hazards: &'s LocalHazards) -> Option<Self> {
-        todo!()
+        let data = pointer.into_usize();
+        hazards.alloc(data)
+            .map(|index| {
+                Shield {
+                    data,
+                    hazards,
+                    index,
+                    _marker: PhantomData
+                }
+            })
     }
 
     /// Returns `true` if the pointer is null.
@@ -144,13 +205,13 @@ impl<'s, T> Shield<'s, T> {
 
     /// Check if `pointer` is protected by the shield. The tags are ignored.
     pub fn validate(&self, pointer: Shared<T>) -> bool {
-        todo!()
+        Shared::into_usize(pointer) == self.data
     }
 }
 
 impl<'s, T> Drop for Shield<'s, T> {
     fn drop(&mut self) {
-        todo!()
+        unsafe { self.hazards.dealloc(self.index); }
     }
 }
 
