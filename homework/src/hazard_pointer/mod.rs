@@ -103,18 +103,20 @@ thread_local! {
 /// Returns `None` if the current thread's hazard array is fully occupied. The returned shield must
 /// be validated before using.
 pub fn protect<T>(pointer: Shared<T>) -> Option<Shield<'static, T>> {
-    unsafe { Shield::new(pointer, HAZARDS.get(thread::current().id())) }
+    let shield = unsafe {
+        Shield::new(pointer, HAZARDS.get(thread::current().id()))
+    };
+    fence(Ordering::SeqCst);
+    shield
 }
 
 /// Returns a validated shield. Returns `None` if the current thread's hazard array is fully
 /// occupied.
 pub fn get_protected<T>(atomic: &Atomic<T>) -> Option<Shield<'static, T>> {
-    let shared = atomic.load(Ordering::Acquire);
-    let shield_opt = unsafe {
-        Shield::new(shared, HAZARDS.get(thread::current().id()))
-    };
+    let shared_ptr = atomic.load(Ordering::Acquire);
 
-    shield_opt.filter(|shield| { shield.validate(shared) })
+    protect(shared_ptr)
+        .filter(|shield| { shield.validate(shared) })
 }
 
 /// Retires a pointer.
