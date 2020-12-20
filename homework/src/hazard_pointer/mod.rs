@@ -113,10 +113,23 @@ pub fn protect<T>(pointer: Shared<T>) -> Option<Shield<'static, T>> {
 /// Returns a validated shield. Returns `None` if the current thread's hazard array is fully
 /// occupied.
 pub fn get_protected<T>(atomic: &Atomic<T>) -> Option<Shield<'static, T>> {
-    let shared_ptr = atomic.load(Ordering::Acquire);
+    loop {
+        let shared_ptr = atomic.load(Ordering::Acquire);
+        let shield = protect(shared_ptr);
+        if shield.is_none() {
+            return None;
+        }
 
-    protect(shared_ptr)
-        .filter(|shield| { shield.validate(shared) })
+        let shield = shield.unwrap();
+        let shared_ptr = atomic.load(Ordering::Acquire);
+
+        if shield.validate(shared_ptr) {
+            break Some(shield)
+        }
+
+        #[cfg(feature = "check-loom")]
+        loom::sync::atomic::spin_loop_hint();
+    }
 }
 
 /// Retires a pointer.
