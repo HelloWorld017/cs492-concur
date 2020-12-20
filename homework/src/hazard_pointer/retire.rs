@@ -6,6 +6,7 @@ use loom::sync::atomic::{fence, Ordering};
 use super::align;
 use super::atomic::Shared;
 use super::hazard::Hazards;
+use itertools::Itertools;
 
 /// Thread-local list of retired pointers.
 pub struct Retirees<'s> {
@@ -34,13 +35,24 @@ impl<'s> Retirees<'s> {
             drop(Box::from_raw(data as *mut T))
         }
 
-        todo!()
+        self.inner.push(
+            (pointer.with_tag(0).into_usize(), free::<T>)
+        );
     }
 
     /// Free the pointers that are `retire`d by the current thread and not `protect`ed by any other
     /// threads.
     pub fn collect(&mut self) {
-        todo!()
+        let hazards = self.hazards.all_hazards();
+        self.inner
+            .retain(|(ptr, free)| {
+                if hazards.contains(ptr) {
+                    true
+                } else {
+                    unsafe { free(*ptr) };
+                    false
+                }
+            });
     }
 }
 

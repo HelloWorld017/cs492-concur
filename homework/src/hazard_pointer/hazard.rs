@@ -205,7 +205,11 @@ impl<'s, T> Shield<'s, T> {
 
     /// Check if `pointer` is protected by the shield. The tags are ignored.
     pub fn validate(&self, pointer: Shared<T>) -> bool {
-        Shared::into_usize(pointer) == self.data
+        (
+            pointer.with_tag(0).into_usize()
+        ) == (
+            Shared::<T>::from_usize(self.data).with_tag(0).into_usize()
+        )
     }
 }
 
