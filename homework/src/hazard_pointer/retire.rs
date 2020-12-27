@@ -1,8 +1,12 @@
+#[cfg(not(feature = "check-loom"))]
 use core::sync::atomic::{fence, Ordering};
+#[cfg(feature = "check-loom")]
+use loom::sync::atomic::{fence, Ordering};
 
 use super::align;
 use super::atomic::Shared;
 use super::hazard::Hazards;
+use itertools::Itertools;
 
 /// Thread-local list of retired pointers.
 pub struct Retirees<'s> {
@@ -31,16 +35,31 @@ impl<'s> Retirees<'s> {
             drop(Box::from_raw(data as *mut T))
         }
 
-        todo!()
+        self.inner.push(
+            (pointer.with_tag(0).into_usize(), free::<T>)
+        );
     }
 
     /// Free the pointers that are `retire`d by the current thread and not `protect`ed by any other
     /// threads.
     pub fn collect(&mut self) {
-        todo!()
+        fence(Ordering::SeqCst);
+
+        let hazards = self.hazards.all_hazards();
+        self.inner
+            .retain(|(ptr, free)| {
+                if hazards.contains(ptr) {
+                    true
+                } else {
+                    unsafe { free(*ptr) };
+                    false
+                }
+            });
     }
 }
 
+// TODO(@tomtomjhj): this triggers loom internal bug
+#[cfg(not(feature = "check-loom"))]
 impl Drop for Retirees<'_> {
     fn drop(&mut self) {
         // In a production-quality implementation of hazard pointers, the remaining local retired

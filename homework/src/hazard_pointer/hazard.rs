@@ -1,13 +1,20 @@
 use core::marker::PhantomData;
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::thread::ThreadId;
 
+#[cfg(not(feature = "check-loom"))]
+use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering};
+#[cfg(feature = "check-loom")]
+use loom::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering};
+
 use super::align;
 use super::atomic::Shared;
+use crate::hazard_pointer::retire::Retirees;
+use crate::hazard_pointer::RETIRED;
 
 /// Per-thread array of hazard pointers.
 ///
@@ -43,7 +50,27 @@ impl LocalHazards {
     ///
     /// This function must be called only by the thread that owns this hazard array.
     pub unsafe fn alloc(&self, data: usize) -> Option<usize> {
-        todo!()
+        loop {
+            let occupied = self.occupied.load(Ordering::Acquire);
+            for x in 0..8 {
+                if occupied & (1 << x) != 0 {
+                    continue;
+                }
+
+                if self.occupied.compare_and_swap(
+                    occupied,
+                    occupied | (1 << x),
+                    Ordering::Acquire
+                ) != occupied {
+                    continue;
+                };
+
+                self.elements[x].store(data, Ordering::Release);
+                return Some(x);
+            };
+
+            return None;
+        }
     }
 
     /// Clears the hazard pointer at the given index.
@@ -53,7 +80,19 @@ impl LocalHazards {
     /// This function must be called only by the thread that owns this hazard array. The index must
     /// have been allocated.
     pub unsafe fn dealloc(&self, index: usize) {
-        todo!()
+        loop {
+            let occupied = self.occupied.load(Ordering::Acquire);
+
+            if self.occupied.compare_and_swap(
+                occupied,
+                occupied ^ (1 << index),
+                Ordering::Release
+            ) != occupied {
+                continue;
+            };
+
+            break;
+        }
     }
 
     /// Returns an iterator of hazard pointers (with tags erased).
@@ -61,6 +100,7 @@ impl LocalHazards {
         LocalHazardsIter {
             hazards: self,
             occupied: self.occupied.load(Ordering::Acquire),
+            idx: 0
         }
     }
 }
@@ -69,18 +109,34 @@ impl LocalHazards {
 struct LocalHazardsIter<'s> {
     hazards: &'s LocalHazards,
     occupied: u8,
+    idx: usize
 }
 
 impl Iterator for LocalHazardsIter<'_> {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        while self.idx < 8 {
+            let output =
+                if self.occupied & (0x1 << self.idx) == 0 {
+                    None
+                } else {
+                    self.hazards.elements.get(self.idx)
+                        .map(|x| { x.load(Ordering::Acquire) })
+                };
+
+            self.idx += 1;
+
+            if output.is_some() {
+                return output;
+            }
+        }
+
+        None
     }
 }
 
 /// Represents the ownership of a hazard pointer slot.
-#[derive(Debug)]
 pub struct Shield<'s, T> {
     data: usize, // preserves the tag of original `Shared`
     hazards: &'s LocalHazards,
@@ -96,7 +152,16 @@ impl<'s, T> Shield<'s, T> {
     ///
     /// This function must be called only by the thread that owns this hazard array.
     pub unsafe fn new(pointer: Shared<T>, hazards: &'s LocalHazards) -> Option<Self> {
-        todo!()
+        let data = pointer.into_usize();
+        hazards.alloc(data)
+            .map(|index| {
+                Shield {
+                    data,
+                    hazards,
+                    index,
+                    _marker: PhantomData
+                }
+            })
     }
 
     /// Returns `true` if the pointer is null.
@@ -140,13 +205,29 @@ impl<'s, T> Shield<'s, T> {
 
     /// Check if `pointer` is protected by the shield. The tags are ignored.
     pub fn validate(&self, pointer: Shared<T>) -> bool {
-        todo!()
+        (
+            pointer.with_tag(0).into_usize()
+        ) == (
+            Shared::<T>::from_usize(self.data).with_tag(0).into_usize()
+        )
     }
 }
 
 impl<'s, T> Drop for Shield<'s, T> {
     fn drop(&mut self) {
-        todo!()
+        unsafe { self.hazards.dealloc(self.index); }
+    }
+}
+
+impl<'s, T> fmt::Debug for Shield<'s, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (raw, tag) = align::decompose_tag::<T>(self.data);
+        f.debug_struct("Shield")
+            .field("raw", &raw)
+            .field("tag", &tag)
+            .field("hazards", &(self.hazards as *const _))
+            .field("index", &self.index)
+            .finish()
     }
 }
 
@@ -159,6 +240,7 @@ pub struct Hazards {
     heads: [AtomicPtr<Node>; Self::BUCKETS],
 }
 
+#[derive(Debug)]
 struct Node {
     next: AtomicPtr<Node>,
     tid: ThreadId,
@@ -168,6 +250,8 @@ struct Node {
 impl Hazards {
     const BUCKETS: usize = 13;
 
+    #[cfg(not(feature = "check-loom"))]
+    /// Returns the hazard array of the given thread.
     pub const fn new() -> Self {
         Self {
             heads: [
@@ -188,7 +272,27 @@ impl Hazards {
         }
     }
 
+    #[cfg(feature = "check-loom")]
     /// Returns the hazard array of the given thread.
+    pub fn new() -> Self {
+        Self {
+            heads: [
+                AtomicPtr::new(ptr::null_mut()),
+                AtomicPtr::new(ptr::null_mut()),
+                AtomicPtr::new(ptr::null_mut()),
+                AtomicPtr::new(ptr::null_mut()),
+                AtomicPtr::new(ptr::null_mut()),
+                AtomicPtr::new(ptr::null_mut()),
+                AtomicPtr::new(ptr::null_mut()),
+                AtomicPtr::new(ptr::null_mut()),
+                AtomicPtr::new(ptr::null_mut()),
+                AtomicPtr::new(ptr::null_mut()),
+                AtomicPtr::new(ptr::null_mut()),
+                AtomicPtr::new(ptr::null_mut()),
+                AtomicPtr::new(ptr::null_mut()),
+            ],
+        }
+    }
     pub fn get(&self, tid: ThreadId) -> &LocalHazards {
         let index = {
             let mut s = DefaultHasher::new();
